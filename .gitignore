@@ -10,3 +10,6 @@ __pycache__/
 # OS / editor
 .DS_Store
 .claude/
+
+# Personal notes (not part of the submission)
+demo_video_notes.md
