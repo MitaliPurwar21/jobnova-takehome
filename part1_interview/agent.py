@@ -30,8 +30,20 @@ load_dotenv(".env.local")
 STAGE1_TIMEOUT = 90   # self-introduction -> past experience
 STAGE2_TIMEOUT = 180  # past experience -> wrap up
 
+# Once a fallback is due, wait up to this long for a natural pause before
+# switching, so we don't cut the candidate off mid-sentence.
+FALLBACK_IDLE_GRACE = 15
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("interview-agent")
+
+
+async def wait_for_pause(session: AgentSession) -> None:
+    """Wait for a gap in the conversation, capped so the interview still moves on."""
+    try:
+        await asyncio.wait_for(session.wait_for_idle(), timeout=FALLBACK_IDLE_GRACE)
+    except Exception:
+        pass  # timed out or session busy — proceed anyway
 
 
 def check_required_env() -> None:
@@ -90,6 +102,7 @@ class IntroAgent(Agent):
     async def _fallback_transition(self) -> None:
         try:
             await asyncio.sleep(STAGE1_TIMEOUT)
+            await wait_for_pause(self.session)
         except asyncio.CancelledError:
             return  # normal transition already happened
 
@@ -128,7 +141,8 @@ class ExperienceAgent(Agent):
             2. Ask about one relevant past project or work experience.
             3. Ask exactly one thoughtful follow-up about that same experience
                (their role, a challenge they solved, what they're proud of).
-            4. After the follow-up, thank them and end the interview.
+            4. After the follow-up, thank them warmly, then call the
+               'end_interview' tool to close the interview.
 
             Keep responses concise and ask one question at a time.
             """,
@@ -151,6 +165,7 @@ class ExperienceAgent(Agent):
     async def _fallback_end(self) -> None:
         try:
             await asyncio.sleep(STAGE2_TIMEOUT)
+            await wait_for_pause(self.session)
         except asyncio.CancelledError:
             return
 
@@ -164,11 +179,18 @@ class ExperienceAgent(Agent):
                     "time and let them know the team will be in touch soon."
                 )
             )
+            logger.info(">> INTERVIEW COMPLETE")
 
     async def on_exit(self) -> None:
         if self._fallback_task and not self._fallback_task.done():
             self._fallback_task.cancel()
         logger.info(">> STAGE 2: Past Experience — ENDED")
+
+    @function_tool
+    async def end_interview(self, context: RunContext):
+        """Close the interview once the candidate has been thanked."""
+        logger.info(">> INTERVIEW COMPLETE")
+        return None
 
 
 server = AgentServer()
