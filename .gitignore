@@ -1,0 +1,12 @@
+# Secrets
+.env.local
+.env
+
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# OS / editor
+.DS_Store
+.claude/
