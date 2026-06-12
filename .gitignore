@@ -11,5 +11,5 @@ __pycache__/
 .DS_Store
 .claude/
 
-# Personal notes (not part of the submission)
+# Personal notes 
 demo_video_notes.md
