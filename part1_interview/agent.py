@@ -16,6 +16,7 @@ from livekit.agents import (
     Agent,
     AgentServer,
     AgentSession,
+    ChatContext,
     JobContext,
     RunContext,
     TurnHandlingOptions,
@@ -44,6 +45,54 @@ async def wait_for_pause(session: AgentSession) -> None:
         await asyncio.wait_for(session.wait_for_idle(), timeout=FALLBACK_IDLE_GRACE)
     except Exception:
         pass  # timed out or session busy — proceed anyway
+
+
+# Prompt used to turn the transcript into a short recap for the hiring team.
+SUMMARY_PROMPT = (
+    "You are assisting a hiring team. Based only on the interview transcript "
+    "below, write a short internal recap. Use exactly this format:\n\n"
+    "Takeaways:\n- <point>\n- <point>\n- <point>\n"
+    "Feedback for candidate:\n- <one constructive, encouraging suggestion>\n\n"
+    "Keep each line short and base everything on what was actually said.\n\n"
+    "Transcript:\n"
+)
+
+
+async def print_summary(session: AgentSession) -> None:
+    """Generate a short recap from the transcript and log it to the terminal.
+
+    This is the signal an interview is really for — not just the conversation,
+    but a quick structured read on the candidate. Demo-level only, not a
+    hiring decision.
+    """
+    transcript = "\n".join(
+        f"{'Candidate' if item.role == 'user' else 'Interviewer'}: {item.text_content.strip()}"
+        for item in session.history.items
+        if getattr(item, "type", None) == "message"
+        and item.role in ("user", "assistant")
+        and item.text_content
+    )
+    if not transcript:
+        return
+
+    ctx = ChatContext.empty()
+    ctx.add_message(role="user", content=SUMMARY_PROMPT + transcript)
+
+    try:
+        summary = ""
+        stream = session.llm.chat(chat_ctx=ctx)
+        async for chunk in stream:
+            if chunk.delta and chunk.delta.content:
+                summary += chunk.delta.content
+        await stream.aclose()
+    except Exception as e:
+        logger.warning("Could not generate summary: %s", e)
+        return
+
+    logger.info(
+        "\n========= INTERVIEW SUMMARY =========\n%s\n====================================",
+        summary.strip(),
+    )
 
 
 def check_required_env() -> None:
@@ -179,6 +228,7 @@ class ExperienceAgent(Agent):
                     "time and let them know the team will be in touch soon."
                 )
             )
+            await print_summary(self.session)
             logger.info(">> INTERVIEW COMPLETE")
 
     async def on_exit(self) -> None:
@@ -189,6 +239,7 @@ class ExperienceAgent(Agent):
     @function_tool
     async def end_interview(self, context: RunContext):
         """Close the interview once the candidate has been thanked."""
+        await print_summary(self.session)
         logger.info(">> INTERVIEW COMPLETE")
         return None
 

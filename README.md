@@ -9,6 +9,12 @@ moves between them on its own.
 - **Stage 2 — Past Experience** (`ExperienceAgent`): asks about one past
   project/experience and one follow-up, then ends politely.
 
+At the end it also prints a short **interview summary** to the terminal — a few
+takeaways plus one piece of feedback, generated from the actual transcript. The
+point of an interview agent isn't just the chat; it's producing usable signal on
+the candidate. (This is a demo-level recap, not a hiring decision — a real
+product would need fairness/bias review before any of it counts.)
+
 ### How the stage switching works
 
 I used LiveKit's multi-agent handoff pattern:
@@ -30,7 +36,6 @@ Each transition is logged to the terminal, e.g. `>> STAGE 2: Past Experience —
 ```
 jobnova-challenge/
 ├── README.md
-├── demo_video_notes.md
 └── part1_interview/
     ├── agent.py
     ├── requirements.txt
@@ -99,7 +104,9 @@ python agent.py dev
 2. Give a short intro. When you finish, the agent moves on and logs
    `>> NORMAL TRANSITION: 'move_to_experience' tool called` →
    `>> STAGE 2: Past Experience — STARTED`.
-3. Answer the experience question and the follow-up; the agent wraps up.
+3. Answer the experience question and the follow-up; the agent wraps up and
+   prints the `========= INTERVIEW SUMMARY =========` block, then
+   `>> INTERVIEW COMPLETE`.
 4. To see the fallback, lower `STAGE1_TIMEOUT` (e.g. to 20) at the top of
    `agent.py` and keep talking past it — you'll see
    `>> FALLBACK: ... moving to Past Experience`.
