@@ -129,7 +129,8 @@ class IntroAgent(Agent):
             4. Do not ask about specific past projects or jobs yet, and don't
                repeat your greeting.
 
-            Keep every response short, warm, and natural.
+            Ask only ONE question per turn, then stop and wait for the candidate
+            to answer. Keep every response short, warm, and natural.
             """,
         )
         self._fallback_task: asyncio.Task | None = None
@@ -193,7 +194,9 @@ class ExperienceAgent(Agent):
             4. After the follow-up, thank them warmly, then call the
                'end_interview' tool to close the interview.
 
-            Keep responses concise and ask one question at a time.
+            Ask only ONE question per turn, then stop and wait for the candidate
+            to answer. Never ask several questions in a row, and if they are
+            silent, just wait — do not fill the silence with more questions.
             """,
         )
         self._fallback_task: asyncio.Task | None = None
