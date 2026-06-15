@@ -1,9 +1,12 @@
-"""Two-stage AI mock interview built with LiveKit Agents.
+"""Multi-stage AI mock interview built with LiveKit Agents.
 
-Stage 1 (IntroAgent) handles the self-introduction, then hands off to
-Stage 2 (ExperienceAgent) for past experience. The handoff happens either
-when the LLM calls the move_to_experience tool, or via a timer fallback so
-the interview always moves forward.
+The interview runs as three agents that hand off to each other:
+  Stage 1 (IntroAgent)      - self-introduction
+  Stage 2 (ExperienceAgent) - one past experience + a follow-up
+  Stage 3 (ClosingAgent)    - answers the candidate's own questions, then closes
+
+Stage progression is driven in code so the interview always moves forward, with
+a timer fallback per stage for when the candidate goes quiet.
 """
 
 import asyncio
@@ -17,19 +20,24 @@ from livekit.agents import (
     AgentServer,
     AgentSession,
     ChatContext,
+    EndpointingOptions,
+    InterruptionOptions,
     JobContext,
     RunContext,
+    StopResponse,
     TurnHandlingOptions,
     function_tool,
 )
-from livekit.plugins import groq, silero
+from livekit.agents.llm import ChatMessage
+from livekit.plugins import deepgram, groq, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
 load_dotenv(".env.local")
 
 # Seconds before a stage auto-advances if the normal transition never fires.
-STAGE1_TIMEOUT = 90   # self-introduction -> past experience
-STAGE2_TIMEOUT = 180  # past experience -> wrap up
+STAGE1_TIMEOUT = 90    # self-introduction -> past experience
+STAGE2_TIMEOUT = 180   # past experience -> wrap up
+STAGE3_TIMEOUT = 60    # Q&A -> close when the candidate has nothing more to ask
 
 # Once a fallback is due, wait up to this long for a natural pause before
 # switching, so we don't cut the candidate off mid-sentence.
@@ -44,7 +52,7 @@ async def wait_for_pause(session: AgentSession) -> None:
     try:
         await asyncio.wait_for(session.wait_for_idle(), timeout=FALLBACK_IDLE_GRACE)
     except Exception:
-        pass  # timed out or session busy — proceed anyway
+        pass
 
 
 # Prompt used to turn the transcript into a short recap for the hiring team.
@@ -59,12 +67,7 @@ SUMMARY_PROMPT = (
 
 
 async def print_summary(session: AgentSession) -> None:
-    """Generate a short recap from the transcript and log it to the terminal.
-
-    This is the signal an interview is really for — not just the conversation,
-    but a quick structured read on the candidate. Demo-level only, not a
-    hiring decision.
-    """
+    """Generate a short recap from the transcript and log it to the terminal."""
     transcript = "\n".join(
         f"{'Candidate' if item.role == 'user' else 'Interviewer'}: {item.text_content.strip()}"
         for item in session.history.items
@@ -95,13 +98,31 @@ async def print_summary(session: AgentSession) -> None:
     )
 
 
+async def close_interview(session: AgentSession) -> None:
+    """Speak a closing line, print the summary, and log completion.
+
+    Used by the timer fallbacks, where the candidate has gone quiet and the
+    agent still needs to sign off on its own.
+    """
+    await session.generate_reply(
+        instructions=(
+            "Warmly thank the candidate for their time, clearly let them know "
+            "that this is the end of the interview, and that the team will be in "
+            "touch soon. Keep it to a short, friendly sign-off."
+        )
+    )
+    await print_summary(session)
+    logger.info(">> INTERVIEW COMPLETE")
+
+
 def check_required_env() -> None:
     """Stop with a clear message if any key is missing (values are never printed)."""
     required = [
         "LIVEKIT_URL",
         "LIVEKIT_API_KEY",
         "LIVEKIT_API_SECRET",
-        "GROQ_API_KEY",
+        "GROQ_API_KEY",      # the interviewer LLM
+        "DEEPGRAM_API_KEY",  # speech-to-text + text-to-speech
     ]
     missing = [name for name in required if not os.getenv(name)]
     if missing:
@@ -113,24 +134,16 @@ def check_required_env() -> None:
 
 
 class IntroAgent(Agent):
-    """Stage 1 — greets the candidate and runs the self-introduction."""
+    """Stage 1 - greets the candidate and runs the self-introduction."""
 
     def __init__(self) -> None:
         super().__init__(
             instructions="""
             You are a friendly, professional AI interviewer at Jobnova.
-            Your only job right now is the self-introduction stage.
-
-            1. Warmly greet the candidate and ask them to introduce themselves.
-            2. Ask at most one short follow-up about their background
-               (e.g. what they're studying or currently working on).
-            3. Once you have a clear picture of who they are, call the
-               'move_to_experience' tool to advance to the next stage.
-            4. Do not ask about specific past projects or jobs yet, and don't
-               repeat your greeting.
-
-            Ask only ONE question per turn, then stop and wait for the candidate
-            to answer. Keep every response short, warm, and natural.
+            You handle the self-introduction stage only: warmly greet the
+            candidate and ask them to introduce themselves. Keep it short and
+            natural. Ask only for their introduction, no follow-ups and nothing
+            about past experience; the next stage covers that.
             """,
         )
         self._fallback_task: asyncio.Task | None = None
@@ -161,8 +174,7 @@ class IntroAgent(Agent):
                 ">> FALLBACK: %ss elapsed in Stage 1 — moving to Past Experience",
                 STAGE1_TIMEOUT,
             )
-            # Let ExperienceAgent.on_enter speak the transition so we don't
-            # produce a duplicate line here.
+            # Let ExperienceAgent.on_enter speak the transition line.
             self.session.update_agent(ExperienceAgent())
 
     async def on_exit(self) -> None:
@@ -170,35 +182,31 @@ class IntroAgent(Agent):
             self._fallback_task.cancel()
         logger.info(">> STAGE 1: Self-Introduction — ENDED")
 
-    @function_tool
-    async def move_to_experience(self, context: RunContext):
-        """Move on once the candidate has finished introducing themselves."""
-        logger.info(">> NORMAL TRANSITION: 'move_to_experience' tool called")
-        return ExperienceAgent()
+    async def on_user_turn_completed(
+        self, turn_ctx: ChatContext, new_message: ChatMessage
+    ) -> None:
+        # Advance in code once the candidate has introduced themselves, so the
+        # intro is always exactly one question and the next stage's greeting
+        # can't overlap with a stray follow-up.
+        logger.info(">> NORMAL TRANSITION: intro complete — moving to Past Experience")
+        self.session.update_agent(ExperienceAgent())
+        raise StopResponse()
 
 
 class ExperienceAgent(Agent):
-    """Stage 2 — asks about one past experience plus a follow-up, then ends."""
+    """Stage 2 - asks about one past experience plus a follow-up."""
 
     def __init__(self) -> None:
         super().__init__(
             instructions="""
-            You are a friendly, professional AI interviewer at Jobnova,
-            now in the past-experience stage.
-
-            1. Briefly acknowledge the transition (e.g. "Thanks for that intro!")
-               without repeating earlier questions.
-            2. Ask about one relevant past project or work experience.
-            3. Ask exactly one thoughtful follow-up about that same experience
-               (their role, a challenge they solved, what they're proud of).
-            4. After the follow-up, thank them warmly, then call the
-               'end_interview' tool to close the interview.
-
-            Ask only ONE question per turn, then stop and wait for the candidate
-            to answer. Never ask several questions in a row, and if they are
-            silent, just wait — do not fill the silence with more questions.
+            You are a friendly, professional AI interviewer at Jobnova in the
+            past-experience stage. Ask concise, natural questions about the
+            candidate's past work, one at a time, and never ask more than one
+            question in a single turn.
             """,
         )
+        self._answers = 0
+        self._done = False
         self._fallback_task: asyncio.Task | None = None
 
     async def on_enter(self) -> None:
@@ -221,29 +229,113 @@ class ExperienceAgent(Agent):
         except asyncio.CancelledError:
             return
 
-        if isinstance(self.session.current_agent, ExperienceAgent):
+        if isinstance(self.session.current_agent, ExperienceAgent) and not self._done:
             logger.warning(
                 ">> FALLBACK: %ss elapsed in Stage 2 — wrapping up", STAGE2_TIMEOUT
             )
-            await self.session.generate_reply(
-                instructions=(
-                    "Warmly wrap up the interview. Thank the candidate for their "
-                    "time and let them know the team will be in touch soon."
-                )
-            )
-            await print_summary(self.session)
-            logger.info(">> INTERVIEW COMPLETE")
+            self._done = True
+            await close_interview(self.session)
 
     async def on_exit(self) -> None:
         if self._fallback_task and not self._fallback_task.done():
             self._fallback_task.cancel()
         logger.info(">> STAGE 2: Past Experience — ENDED")
 
+    async def on_user_turn_completed(
+        self, turn_ctx: ChatContext, new_message: ChatMessage
+    ) -> None:
+        # Drive the stage in code: first answer -> one follow-up; second answer
+        # -> hand off to the closing stage. The LLM only phrases the questions,
+        # so it can't stack questions or end early.
+        if self._done:
+            raise StopResponse()
+
+        self._answers += 1
+        if self._answers == 1:
+            await self.session.generate_reply(
+                instructions=(
+                    "Ask one thoughtful follow-up about that same experience — "
+                    "their specific role, a challenge they solved, or what they "
+                    "are most proud of. Ask a single question."
+                )
+            )
+        else:
+            self._done = True
+            self.session.update_agent(ClosingAgent())
+        raise StopResponse()
+
+
+class ClosingAgent(Agent):
+    """Stage 3 - invites the candidate's own questions, answers them, then closes."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            instructions="""
+            You are a friendly, professional AI interviewer at Jobnova wrapping
+            up the interview. Answer the candidate's questions about the role,
+            the team, or the company briefly and warmly. If you don't know a
+            specific detail, say the team can follow up after the interview.
+            When the candidate has no more questions, just call the
+            'end_interview' tool — it speaks the closing sign-off for you, so
+            don't say goodbye yourself.
+            """,
+        )
+        self._closed = False
+        self._fallback_task: asyncio.Task | None = None
+
+    async def on_enter(self) -> None:
+        logger.info(">> STAGE 3: Wrap-Up & Questions — STARTED")
+
+        await self.session.generate_reply(
+            instructions=(
+                "Briefly thank the candidate for sharing their experience, then "
+                "ask if they have any questions for you about the role or what "
+                "it's like working at Jobnova. Ask a single question."
+            )
+        )
+
+        self._fallback_task = asyncio.create_task(self._fallback_end())
+
+    async def _fallback_end(self) -> None:
+        try:
+            await asyncio.sleep(STAGE3_TIMEOUT)
+            await wait_for_pause(self.session)
+        except asyncio.CancelledError:
+            return
+
+        if isinstance(self.session.current_agent, ClosingAgent) and not self._closed:
+            logger.warning(
+                ">> FALLBACK: %ss elapsed in Stage 3 — closing", STAGE3_TIMEOUT
+            )
+            self._closed = True
+            await close_interview(self.session)
+
+    async def on_exit(self) -> None:
+        if self._fallback_task and not self._fallback_task.done():
+            self._fallback_task.cancel()
+        logger.info(">> STAGE 3: Wrap-Up & Questions — ENDED")
+
+    async def on_user_turn_completed(
+        self, turn_ctx: ChatContext, new_message: ChatMessage
+    ) -> None:
+        # No StopResponse here on purpose: let the LLM actually answer the
+        # candidate's questions so the conversation stays two-way until they're
+        # done. Once closed, ignore any further input.
+        if self._closed:
+            raise StopResponse()
+
     @function_tool
     async def end_interview(self, context: RunContext):
-        """Close the interview once the candidate has been thanked."""
-        await print_summary(self.session)
-        logger.info(">> INTERVIEW COMPLETE")
+        """Close the interview once the candidate has no more questions."""
+        if self._closed:
+            return None
+        self._closed = True
+        if self._fallback_task and not self._fallback_task.done():
+            self._fallback_task.cancel()
+        logger.info(">> NORMAL TRANSITION: no more questions — closing interview")
+        # close_interview speaks the sign-off; calling generate_reply from inside
+        # a tool is the supported way to make it the agent's final spoken turn.
+        await close_interview(self.session)
         return None
 
 
@@ -255,13 +347,29 @@ async def entrypoint(ctx: JobContext):
     logger.info(">> New interview session — connecting...")
     await ctx.connect()
 
-    # STT, LLM and TTS all run on a single Groq key; VAD runs locally.
+    # Deepgram handles speech (STT + TTS); Groq runs the LLM; VAD is local.
+    # (Groq's free TTS is capped per day, so the voice goes through Deepgram.)
     session = AgentSession(
-        stt=groq.STT(model="whisper-large-v3-turbo"),
+        stt=deepgram.STT(model="nova-3"),
         llm=groq.LLM(model="llama-3.3-70b-versatile"),
-        tts=groq.TTS(),
-        vad=silero.VAD.load(),
-        turn_handling=TurnHandlingOptions(turn_detection=MultilingualModel()),
+        tts=deepgram.TTS(model="aura-2-andromeda-en"),
+        # Higher activation threshold so speaker echo doesn't trigger the mic —
+        # lets the demo run without headphones.
+        vad=silero.VAD.load(activation_threshold=0.75, min_silence_duration=0.6),
+        turn_handling=TurnHandlingOptions(
+            turn_detection=MultilingualModel(),
+            # Wait a moment after the candidate stops before replying, so natural
+            # mid-answer pauses don't get cut off (streaming STT ends eagerly).
+            endpointing=EndpointingOptions(min_delay=1.0, max_delay=6.0),
+            # Don't let the agent be interrupted while speaking, and drop mic
+            # audio captured during that time, so its own voice isn't
+            # transcribed as the candidate answering (which caused back-to-back
+            # questions on open speakers).
+            interruption=InterruptionOptions(
+                enabled=False,
+                discard_audio_if_uninterruptible=True,
+            ),
+        ),
     )
 
     await session.start(agent=IntroAgent(), room=ctx.room)
