@@ -7,7 +7,8 @@ that hand off to each other and move the interview along on their own.
 - **Stage 1 — Self-Introduction** (`IntroAgent`): greets the candidate and asks
   them to introduce themselves.
 - **Stage 2 — Past Experience** (`ExperienceAgent`): asks about one past
-  project/experience and a single follow-up.
+  project/experience, then digs in with a few focused follow-ups (their role, a
+  challenge, the impact) — one question at a time.
 - **Stage 3 — Wrap-Up & Questions** (`ClosingAgent`): invites the candidate's
   own questions, answers them, then closes the interview.
 
@@ -22,8 +23,8 @@ Each stage is a LiveKit `Agent`, and the progression is driven in code (in
 the questions and can't stack them or jump stages:
 
 - **Normal transition:** once the candidate finishes their introduction,
-  `IntroAgent` hands off to `ExperienceAgent`. After one experience answer and a
-  follow-up, that hands off to `ClosingAgent`. The closing stage is open-ended —
+  `IntroAgent` hands off to `ExperienceAgent`. After the experience question and
+  its follow-ups, that hands off to `ClosingAgent`. The closing stage is open-ended —
   the candidate can ask questions and the agent answers — and it ends when the
   candidate has nothing more to ask (the LLM calls a small `end_interview` tool).
 - **Timer fallback:** if the candidate goes quiet, a background timer per stage
@@ -105,7 +106,7 @@ python agent.py dev
 2. Give a short intro. When you finish, it logs
    `>> NORMAL TRANSITION: intro complete — moving to Past Experience` and then
    `>> STAGE 2: Past Experience — STARTED`.
-3. Answer the experience question and the follow-up. It moves to
+3. Answer the experience question and its follow-ups. It then moves to
    `>> STAGE 3: Wrap-Up & Questions — STARTED` and asks if you have any questions.
 4. Ask it something (e.g. "what's the team like?") and it answers. When you say
    you have no more questions, it closes, prints the

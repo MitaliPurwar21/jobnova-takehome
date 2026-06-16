@@ -194,15 +194,25 @@ class IntroAgent(Agent):
 
 
 class ExperienceAgent(Agent):
-    """Stage 2 - asks about one past experience plus a follow-up."""
+    """Stage 2 - a short deep-dive into one past experience."""
+
+    # Progressive follow-ups, asked one at a time after the opening question.
+    FOLLOWUPS = (
+        "Ask one follow-up about the candidate's specific role and what they "
+        "personally contributed to that project. Ask a single question.",
+        "Ask one follow-up about the hardest problem or challenge they ran into "
+        "there and how they worked through it. Ask a single question.",
+        "Ask one follow-up about the outcome or impact, or what they are most "
+        "proud of from it. Ask a single question.",
+    )
 
     def __init__(self) -> None:
         super().__init__(
             instructions="""
             You are a friendly, professional AI interviewer at Jobnova in the
             past-experience stage. Ask concise, natural questions about the
-            candidate's past work, one at a time, and never ask more than one
-            question in a single turn.
+            candidate's past work, one at a time, building on what they just
+            said. Never ask more than one question in a single turn.
             """,
         )
         self._answers = 0
@@ -220,6 +230,13 @@ class ExperienceAgent(Agent):
             )
         )
 
+        self._arm_fallback()
+
+    def _arm_fallback(self) -> None:
+        # Restart the silence timer so it only fires when the candidate actually
+        # goes quiet, not partway through this multi-question stage.
+        if self._fallback_task and not self._fallback_task.done():
+            self._fallback_task.cancel()
         self._fallback_task = asyncio.create_task(self._fallback_end())
 
     async def _fallback_end(self) -> None:
@@ -231,7 +248,7 @@ class ExperienceAgent(Agent):
 
         if isinstance(self.session.current_agent, ExperienceAgent) and not self._done:
             logger.warning(
-                ">> FALLBACK: %ss elapsed in Stage 2 — wrapping up", STAGE2_TIMEOUT
+                ">> FALLBACK: %ss of silence in Stage 2 — wrapping up", STAGE2_TIMEOUT
             )
             self._done = True
             await close_interview(self.session)
@@ -244,21 +261,15 @@ class ExperienceAgent(Agent):
     async def on_user_turn_completed(
         self, turn_ctx: ChatContext, new_message: ChatMessage
     ) -> None:
-        # Drive the stage in code: first answer -> one follow-up; second answer
-        # -> hand off to the closing stage. The LLM only phrases the questions,
-        # so it can't stack questions or end early.
+        # Drive the stage in code: ask the follow-ups one at a time, then hand
+        # off. The LLM only phrases each question, so it can't stack them.
         if self._done:
             raise StopResponse()
 
-        self._answers += 1
-        if self._answers == 1:
-            await self.session.generate_reply(
-                instructions=(
-                    "Ask one thoughtful follow-up about that same experience — "
-                    "their specific role, a challenge they solved, or what they "
-                    "are most proud of. Ask a single question."
-                )
-            )
+        if self._answers < len(self.FOLLOWUPS):
+            await self.session.generate_reply(instructions=self.FOLLOWUPS[self._answers])
+            self._answers += 1
+            self._arm_fallback()
         else:
             self._done = True
             self.session.update_agent(ClosingAgent())
@@ -294,6 +305,13 @@ class ClosingAgent(Agent):
             )
         )
 
+        self._arm_fallback()
+
+    def _arm_fallback(self) -> None:
+        # Reset the silence timer on each turn so it only closes the interview
+        # when the candidate actually stops, not during an active Q&A.
+        if self._fallback_task and not self._fallback_task.done():
+            self._fallback_task.cancel()
         self._fallback_task = asyncio.create_task(self._fallback_end())
 
     async def _fallback_end(self) -> None:
@@ -323,6 +341,7 @@ class ClosingAgent(Agent):
         # done. Once closed, ignore any further input.
         if self._closed:
             raise StopResponse()
+        self._arm_fallback()
 
     @function_tool
     async def end_interview(self, context: RunContext):
