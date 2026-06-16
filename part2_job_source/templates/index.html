@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Jobnova · Job Source Agent</title>
+  <style>
+    :root {
+      --bg:#0d1117; --surface:#161b22; --surface2:#1c2230; --hair:#2a3140;
+      --ink:#e6edf3; --dim:#8b949e; --accent:#f0883e; --ok:#3fb950; --bad:#f85149;
+    }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--ink);
+      font-family:-apple-system,Segoe UI,Roboto,sans-serif; -webkit-font-smoothing:antialiased; }
+    .wrap { max-width:880px; margin:0 auto; padding:0 24px; }
+    .mono { font-family:ui-monospace,"SF Mono",Menlo,monospace; }
+    header { border-bottom:1px solid var(--hair); padding:18px 0; }
+    .eyebrow { font-size:11px; letter-spacing:.25em; color:var(--accent); }
+    h1 { font-size:34px; line-height:1.1; margin:8px 0 6px; font-weight:600; }
+    .lede { color:var(--dim); font-size:14px; max-width:620px; line-height:1.6; }
+    .card { background:var(--surface); border:1px solid var(--hair); border-radius:8px; padding:18px; }
+    .input-row { display:flex; gap:10px; margin-top:28px; }
+    input { flex:1; background:var(--bg); border:1px solid var(--hair); border-radius:6px;
+      color:var(--ink); font-size:14px; padding:11px 13px; outline:none; }
+    input:focus { border-color:var(--accent); }
+    button.exec { background:var(--accent); color:#0d1117; border:none; border-radius:6px;
+      font-size:13px; font-weight:600; letter-spacing:.05em; padding:0 22px; cursor:pointer; }
+    button.exec:disabled { opacity:.45; cursor:not-allowed; }
+    .stage { background:var(--surface); border:1px solid var(--hair); border-radius:8px;
+      margin:12px 0; padding:14px 16px; opacity:.45; transition:opacity .3s; }
+    .stage.on { opacity:1; }
+    .stage .top { display:flex; justify-content:space-between; align-items:center; gap:10px; }
+    .callsign { font-size:11px; letter-spacing:.18em; color:var(--dim); }
+    .sname { font-weight:600; font-size:15px; }
+    .status { font-size:11px; letter-spacing:.12em; color:var(--dim); }
+    .status.live { color:var(--accent); }
+    .status.done { color:var(--ok); }
+    .role { color:var(--dim); font-size:12.5px; margin:4px 0 0; }
+    .out { margin-top:10px; display:none; }
+    .out.show { display:block; }
+    .kv { display:flex; gap:12px; padding:3px 0; font-size:12.5px; }
+    .k { color:var(--dim); width:130px; flex-shrink:0; }
+    .v { color:var(--ink); word-break:break-all; }
+    .v a { color:var(--accent); text-decoration:none; }
+    .tick { color:var(--ok); } .cross { color:var(--bad); }
+    .final { margin:22px 0 60px; display:none; }
+    .final.on { display:block; }
+    .final h3 { margin:0 0 12px; font-size:18px; }
+    .spec { background:var(--surface2); border:1px solid var(--hair); border-radius:6px;
+      padding:12px; font-size:12.5px; word-break:break-all; margin-top:12px; }
+    .note { margin-top:10px; font-size:12.5px; line-height:1.5; color:var(--dim);
+      border-left:2px solid var(--accent); padding:6px 0 6px 12px; }
+    .poshead { margin-top:12px; color:var(--dim); font-size:10px; letter-spacing:.2em; }
+    .posrow { padding:5px 0; font-size:12.5px; border-bottom:1px solid var(--hair); }
+    .posrow:last-child { border-bottom:none; }
+    .posrow .t { color:var(--ink); } .posrow a { color:var(--accent); text-decoration:none; }
+    .posrow a:hover { text-decoration:underline; }
+    .copy { margin-top:10px; background:transparent; border:1px solid var(--hair); color:var(--ink);
+      border-radius:6px; font-size:12px; padding:6px 14px; cursor:pointer; }
+    .copy:hover { border-color:var(--accent); color:var(--accent); }
+    footer { border-top:1px solid var(--hair); padding:16px 0; color:var(--dim); font-size:11px;
+      letter-spacing:.12em; }
+  </style>
+</head>
+<body>
+<header><div class="wrap"><span class="mono" style="font-size:12px;letter-spacing:.2em;color:var(--dim)">JOBNOVA · JOB SOURCE AGENT</span></div></header>
+
+<section class="wrap" style="padding-top:36px">
+  <div class="eyebrow mono">PART 2</div>
+  <h1>LinkedIn job → company → careers → one open role</h1>
+  <p class="lede">Paste a LinkedIn job URL (or just a company name). The agent reads the
+    company, finds its careers page, drills to a single open position, and verifies the links.</p>
+
+  <div class="input-row">
+    <input id="inp" type="text" value="https://www.linkedin.com/jobs/view/4427958773"
+      placeholder="https://www.linkedin.com/jobs/view/… or a company name">
+    <button id="go" class="exec">RUN</button>
+  </div>
+</section>
+
+<section class="wrap" style="margin-top:22px">
+  <div class="stage" id="s-SIG-01">
+    <div class="top"><div><span class="callsign mono">SIG-01</span> <span class="sname">Signal</span></div>
+      <span class="status mono" id="st-SIG-01">STANDBY</span></div>
+    <p class="role">Reads the company name + website from the LinkedIn job (public guest endpoint).</p>
+    <div class="out mono" id="o-SIG-01"></div>
+  </div>
+  <div class="stage" id="s-NAV-02">
+    <div class="top"><div><span class="callsign mono">NAV-02</span> <span class="sname">Navigator</span></div>
+      <span class="status mono" id="st-NAV-02">STANDBY</span></div>
+    <p class="role">Follows links from the homepage to the careers page.</p>
+    <div class="out mono" id="o-NAV-02"></div>
+  </div>
+  <div class="stage" id="s-EXT-03">
+    <div class="top"><div><span class="callsign mono">EXT-03</span> <span class="sname">Extractor</span></div>
+      <span class="status mono" id="st-EXT-03">STANDBY</span></div>
+    <p class="role">Drills through the ATS board (Lever / Greenhouse / Ashby) to one posting.</p>
+    <div class="out mono" id="o-EXT-03"></div>
+  </div>
+  <div class="stage" id="s-VER-04">
+    <div class="top"><div><span class="callsign mono">VER-04</span> <span class="sname">Verifier</span></div>
+      <span class="status mono" id="st-VER-04">STANDBY</span></div>
+    <p class="role">Confirms the career + position URLs actually resolve (parallel HEAD checks).</p>
+    <div class="out mono" id="o-VER-04"></div>
+  </div>
+
+  <div class="final card" id="final">
+    <h3>Result</h3>
+    <div class="out show mono" id="finalOut"></div>
+    <div class="spec mono"><div style="color:var(--dim);font-size:10px;letter-spacing:.2em;margin-bottom:6px">DELIVERABLE (company, career page, open position)</div><span id="specLine"></span></div>
+    <button class="copy mono" id="copyBtn">COPY</button>
+  </div>
+</section>
+
+<footer><div class="wrap mono">GROQ (OPTIONAL) · HEURISTIC FALLBACK · NO API KEY REQUIRED</div></footer>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const STAGES = ["SIG-01","NAV-02","EXT-03","VER-04"];
+
+function reset() {
+  STAGES.forEach((a) => {
+    $(`s-${a}`).classList.remove("on");
+    $(`st-${a}`).className = "status mono"; $(`st-${a}`).textContent = "STANDBY";
+    $(`o-${a}`).className = "out mono"; $(`o-${a}`).innerHTML = "";
+  });
+  $("final").classList.remove("on");
+}
+
+function rowVal(v) {
+  if (v === true) return '<span class="tick">✓ verified</span>';
+  if (v === false) return '<span class="cross">✗ unreachable</span>';
+  if (v === null || v === undefined || v === "") return '<span style="color:var(--dim)">null</span>';
+  if (typeof v === "string" && v.startsWith("http"))
+    return `<a href="${v}" target="_blank">${v}</a>`;
+  return v;
+}
+
+function renderOut(el, output, extra) {
+  let rows = Object.entries(output).map(([k, v]) =>
+    `<div class="kv"><span class="k">${k}</span><span class="v">${rowVal(v)}</span></div>`).join("");
+  if (extra) rows += extra;
+  el.innerHTML = rows; el.classList.add("show");
+}
+
+$("go").onclick = () => {
+  const input = $("inp").value.trim(); if (!input) return;
+  reset(); $("go").disabled = true; $("go").textContent = "…";
+  const es = new EventSource(`/run?input=${encodeURIComponent(input)}`);
+
+  es.addEventListener("transmitting", (e) => {
+    const a = JSON.parse(e.data).agent;
+    $(`s-${a}`).classList.add("on");
+    $(`st-${a}`).className = "status mono live"; $(`st-${a}`).textContent = "RUNNING…";
+  });
+  es.addEventListener("locked", (e) => {
+    const d = JSON.parse(e.data);
+    $(`st-${d.agent}`).className = "status mono done"; $(`st-${d.agent}`).textContent = "DONE";
+    let extra = "";
+    if (d.agent === "SIG-01")
+      extra = `<div class="kv"><span class="k">website check</span><span class="v">${rowVal(d.verified)}</span></div>`
+            + `<div class="kv"><span class="k">reasoning</span><span class="v">${d.engine}</span></div>`;
+    if (d.note) extra += `<div class="note">${d.note}</div>`;
+    if (d.agent === "EXT-03" && d.positions && d.positions.length) {
+      extra += `<div class="poshead">ALL POSITIONS FOUND (${d.positions.length})</div>`
+        + d.positions.map((p) =>
+            `<div class="posrow"><span class="t">${p.title || "—"}</span> · `
+            + `<a href="${p.url}" target="_blank">${p.url}</a></div>`).join("");
+    }
+    renderOut($(`o-${d.agent}`), d.output, extra);
+  });
+  es.addEventListener("done", (e) => {
+    const d = JSON.parse(e.data);
+    renderOut($("finalOut"), {
+      company_name: d.company_name, company_website: d.company_website,
+      career_page_url: d.career_page_url, open_position_url: d.open_position_url,
+    }, d.note ? `<div class="note">${d.note}</div>` : "");
+    $("specLine").textContent = d.spec_format;
+    $("final").classList.add("on");
+    es.close(); $("go").disabled = false; $("go").textContent = "RUN";
+  });
+  es.addEventListener("failure", (e) => {
+    alert("Pipeline failed: " + JSON.parse(e.data).message);
+    es.close(); $("go").disabled = false; $("go").textContent = "RUN";
+  });
+  es.onerror = () => { es.close(); $("go").disabled = false; $("go").textContent = "RUN"; };
+};
+$("copyBtn").onclick = () => {
+  navigator.clipboard.writeText($("specLine").textContent);
+  $("copyBtn").textContent = "COPIED"; setTimeout(() => $("copyBtn").textContent = "COPY", 1200);
+};
+$("inp").addEventListener("keydown", (e) => { if (e.key === "Enter") $("go").click(); });
+</script>
+</body>
+</html>

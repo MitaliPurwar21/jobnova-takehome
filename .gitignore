@@ -7,6 +7,10 @@ venv/
 __pycache__/
 *.pyc
 
+# Generated output (Part 2)
+part2_job_source/output/*
+!part2_job_source/output/.gitkeep
+
 # OS / editor
 .DS_Store
 .claude/
